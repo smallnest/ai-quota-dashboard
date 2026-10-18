@@ -1,8 +1,11 @@
-"""Automatic loop: fetch real Codex quota -> update data/quota.json -> POST to the
-dashboard, which writes the file and triggers a BLE push to the Wio Terminal.
+"""Automatic loop: fetch real OpenCode Go quota -> update data/quota.json -> POST
+to the dashboard, which writes the file and triggers a BLE push to the Wio
+Terminal.
 
-It reuses codex_usage.py (window utilization + reset times) and token_usage.py
-(actual token totals from local logs). Run the dashboard server with BLE first:
+The plan row comes from the official OpenCode Go usage endpoint
+(GET https://opencode.ai/inference/go/v1/usage, keyed by the OPENCODE_GO_API_KEY
+environment variable). token_usage.py still supplies today's token totals from
+local session logs. Run the dashboard server with BLE first:
 
     py server.py --ble --ble-interval 15
 
@@ -19,8 +22,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -50,63 +55,129 @@ def estimate_cost(bucket: dict, price: dict) -> float:
 
 def human_tokens(n: int) -> str:
     n = int(n or 0)
-    for unit, size in (("T", 10**12), ("G", 10**9), ("M", 10**6), ("K", 10**3)):
+    for unit, size in (("T", 10**12), ("B", 10**9), ("M", 10**6), ("K", 10**3)):
         if n >= size:
             return f"{n / size:.2f}{unit}Token"
     return f"{n}Token"
 
 
-def build_quota(args) -> dict:
-    # Codex real quota is best-effort, same as Claude below: if Codex CLI isn't
-    # logged in (no ~/.codex/auth.json) or the endpoint fails, keep the previous
-    # values instead of breaking the whole push.
-    codex_block = None
-    if not args.no_codex:
-        try:
-            auth = cu.load_auth()
-            rl = cu.fetch_usage_wham(auth, allow_refresh=not args.no_refresh)
-            codex_block = cu.to_dashboard_codex(rl)
-        except Exception as error:
-            print(f"[codex] usage fetch skipped: {error}", file=sys.stderr)
+def short_tokens(n: int) -> str:
+    # Compact form for the device's headline number: "13.3M", "1.8B", "0".
+    n = int(n or 0)
+    for unit, size in (("T", 10**12), ("B", 10**9), ("M", 10**6), ("K", 10**3)):
+        if n >= size:
+            return f"{n / size:.1f}{unit}"
+    return str(n)
 
+
+# Official OpenCode Go usage endpoint (see console/api/inference.mdx and the
+# inference OpenAPI spec). The key comes from OPENCODE_GO_API_KEY, the key the
+# user copies out of the OpenCode Console after subscribing to Go / Go Plus.
+GO_USAGE_URL = "https://opencode.ai/inference/go/v1/usage"
+GO_USAGE_TIMEOUT = 20
+
+
+def fetch_plan() -> dict | None:
+    """Best-effort OpenCode Go plan usage snapshot via the official usage API.
+
+    Returns {"rolling": {"pct", "resetAt"}, "weekly": ..., "monthly": ...}
+    or None if OPENCODE_GO_API_KEY is missing / expired / the query fails. The
+    caller keeps the previous snapshot on failure, so the device never shows
+    blanks while the key is out of date.
+
+    Response shape (inference OpenAPI spec, GET /go/v1/usage):
+        {"usage": {"rolling": {"status", "percent", "resetsAt"}, "weekly": ...,
+         "monthly": ...}}
+    The three windows map 1:1 onto the display: rolling (5-hour) / weekly /
+    monthly used-percent, same as the old Volcano Coding Plan buckets.
+    """
+    api_key = os.environ.get("OPENCODE_GO_API_KEY", "").strip()
+    if not api_key:
+        print("[plan] OPENCODE_GO_API_KEY not set; keeping previous plan", file=sys.stderr)
+        return None
+
+    request = urllib.request.Request(
+        GO_USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "wio-ai-quota-dashboard/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=GO_USAGE_TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace").strip()[:160]
+        print(f"[plan] Go usage HTTP {error.code}: {detail}", file=sys.stderr)
+        return None
+    except Exception as error:
+        print(f"[plan] Go usage fetch failed: {error}", file=sys.stderr)
+        return None
+
+    usage = data.get("usage") or {}
+    periods = {}
+    for label in ("rolling", "weekly", "monthly"):
+        window = usage.get(label) or {}
+        if "percent" not in window:
+            continue
+        periods[label] = {
+            "pct": round(float(window["percent"])),
+            "resetAt": window.get("resetsAt", ""),
+        }
+    if periods:
+        return periods
+    print(f"[plan] Go usage response had no percent fields: {str(data)[:160]}", file=sys.stderr)
+    return None
+
+
+def build_quota(args) -> dict:
+    # Actual usage always comes from the local session logs (Claude Code and
+    # Codex run against OpenCode Go, so the official Anthropic / OpenAI quota
+    # endpoints don't apply).
     tz = timezone(timedelta(hours=args.tz))
     now = datetime.now(tz)
     start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     start_week = now - timedelta(days=7)
-    cx_today, _, _ = tu.collect_codex(start_today, start_week)
-    cc_today, _, _ = tu.collect_claude(start_today, start_week)
+    cx_today, cx_week, _ = tu.collect_codex(start_today, start_week)
+    cc_today, cc_week, _ = tu.collect_claude(start_today, start_week)
+
+    today_total = cx_today["total"] + cc_today["total"]
+    week_total = cx_week["total"] + cc_week["total"]
+    today_cost = estimate_cost(cx_today, PRICING["codex"]) + estimate_cost(cc_today, PRICING["claude"])
 
     try:
         quota = json.loads(cu.DATA_FILE.read_text("utf-8"))
     except Exception:
-        quota = {"footer": {}, "platforms": {}}
-
-    if codex_block is not None:
-        quota.setdefault("platforms", {})["codex"] = codex_block
-    else:
-        quota.setdefault("platforms", {}).setdefault("codex", {
-            "remaining": 0,
-            "short": {"label": "5h", "pct": 0, "reset": "--"},
-            "week": {"label": "7d --", "pct": 0, "reset": "--"},
-        })
-
-    # Claude real quota is best-effort: the endpoint is rate-limited and may be
-    # missing entirely if Claude Code isn't logged in. Keep the previous values
-    # (or placeholders) on failure instead of breaking the Codex push.
-    if not args.no_claude:
-        try:
-            quota["platforms"]["claude"] = clu.to_dashboard_claude(clu.fetch_usage())
-        except Exception as error:
-            print(f"[claude] usage fetch skipped: {error}", file=sys.stderr)
+        quota = {}
+    quota.pop("platforms", None)  # per-platform Anthropic/OpenAI quota is unused
+    # Migrate a stale Volcano-era plan snapshot (key "session") to the OpenCode
+    # Go schema ("rolling") so the 5h window bar keeps rendering while the new
+    # fetch is unavailable.
+    old_plan = quota.get("plan") or {}
+    if "session" in old_plan and "rolling" not in old_plan:
+        old_plan["rolling"] = old_plan.pop("session")
 
     hhmm = now.strftime("%H:%M")
     quota["updatedAt"] = hhmm
     footer = quota.setdefault("footer", {})
     footer["time"] = hhmm
-    footer["tokens"] = human_tokens(cx_today["total"] + cc_today["total"])
-
-    today_cost = estimate_cost(cx_today, PRICING["codex"]) + estimate_cost(cc_today, PRICING["claude"])
+    footer["tokens"] = human_tokens(today_total)
     footer["cost"] = f"${today_cost:.2f}"
+
+    # OpenCode Go quota (best-effort): keep the previous snapshot when the API
+    # key is missing, expired, or the endpoint is unreachable.
+    plan = fetch_plan()
+    if plan:
+        quota["plan"] = plan
+
+    quota["today"] = {
+        "tokens": human_tokens(today_total),
+        "tokensShort": short_tokens(today_total),
+        "cost": f"${today_cost:.2f}",
+        "weekTokens": human_tokens(week_total),
+        "weekShort": short_tokens(week_total),
+    }
     return quota
 
 
@@ -120,26 +191,19 @@ def post(quota: dict, url: str) -> None:
 
 def cycle(args) -> None:
     quota = build_quota(args)
-    codex = quota["platforms"]["codex"]
     try:
         post(quota, args.dashboard_url)
         pushed = "posted+BLE"
     except Exception as error:
         cu.DATA_FILE.write_text(json.dumps(quota, ensure_ascii=False, indent=2) + "\n", "utf-8")
         pushed = f"file-only (server down? {error})"
-    claude = quota.get("platforms", {}).get("claude") or {}
-    claude_txt = ""
-    if claude.get("short"):
-        claude_txt = (
-            f"  claude 5h={claude['short']['pct']}% "
-            f"7d={claude.get('week', {}).get('pct', 0)}%"
-        )
+    plan = quota.get("plan") or {}
+    today = quota.get("today") or {}
     stamp = datetime.now().strftime("%H:%M:%S")
     print(
-        f"[{stamp}] codex 5h={codex['short']['pct']}% (reset {codex['short']['reset']})  "
-        f"7d={codex['week']['pct']}% (reset {codex['week']['reset']})"
-        f"{claude_txt}  "
-        f"today={quota['footer']['cost']}  tokens={quota['footer']['tokens']}  -> {pushed}",
+        f"[{stamp}] go week={plan.get('weekly', {}).get('pct', '--')}% "
+        f"rolling={plan.get('rolling', {}).get('pct', '--')}%  "
+        f"today={today.get('cost', '--')} tokens={today.get('tokensShort', '--')}  -> {pushed}",
         flush=True,
     )
 

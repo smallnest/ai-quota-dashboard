@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 .venv/
+arduino/ai_quota_dashboard/build/
+data/quota.json

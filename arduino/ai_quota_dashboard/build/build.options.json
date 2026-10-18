@@ -1,9 +1,0 @@
-{
-  "additionalFiles": "",
-  "compiler.optimization_flags": "",
-  "customBuildProperties": "",
-  "fqbn": "Seeeduino:samd:seeed_wio_terminal",
-  "hardwareFolders": "C:\\Users\\rong\\AppData\\Local\\Arduino15\\packages\\Seeeduino\\hardware\\samd\\1.8.6,C:\\Users\\rong\\AppData\\Local\\Arduino15\\packages\\Seeeduino\\hardware\\samd\\1.8.6",
-  "otherLibrariesFolders": "C:\\Users\\rong\\Documents\\Arduino\\libraries",
-  "sketchLocation": "C:\\Users\\rong\\Desktop\\AI生成固件\\应用创作\\token仪表盘\\wio-terminal-ai-quota-dashboard-complete\\wio-terminal-ai-quota-dashboard-complete\\arduino\\ai_quota_dashboard"
-}

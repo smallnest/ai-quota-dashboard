@@ -253,38 +253,38 @@
   <main class="screen" aria-label="Wio Terminal 320 by 240 dashboard preview">
     <section class="row claude">
       <div class="brand">
-        <img class="icon" src="https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg" alt="" decoding="async" />
-        Claude
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2L4.5 9.5V14.5L12 22L19.5 14.5V9.5L12 2Z"/></svg>
+        OpenCode Go
       </div>
-      <div class="percent"><span data-field="claude.remaining">--</span><small>%</small></div>
-      <div class="remain">remain</div>
+      <div class="percent"><span data-field="plan.big">--</span></div>
+      <div class="remain" data-field="plan.label">--</div>
       <div class="metrics">
         <div class="metric">
-          <div class="line"><span data-field="claude.short.label">--</span><span>reset <b data-field="claude.short.reset">--:--</b></span></div>
-          <div class="bar"><div class="fill" data-bar="claude.short.pct" style="--pct:0%"></div></div>
+          <div class="line"><span data-field="plan.a.n">--</span><span data-field="plan.a.v">--</span></div>
+          <div class="bar"><div class="fill" data-bar="plan.a.b" style="--pct:0%"></div></div>
         </div>
         <div class="metric">
-          <div class="line"><span data-field="claude.week.label">--</span><span data-field="claude.week.reset">--</span></div>
-          <div class="bar"><div class="fill" data-bar="claude.week.pct" style="--pct:0%"></div></div>
+          <div class="line"><span data-field="plan.b.n">--</span><span data-field="plan.b.v">--</span></div>
+          <div class="bar"><div class="fill" data-bar="plan.b.b" style="--pct:0%"></div></div>
         </div>
       </div>
     </section>
 
     <section class="row codex">
       <div class="brand">
-        <img class="icon" src="https://upload.wikimedia.org/wikipedia/commons/6/66/OpenAI_logo_2025_%28symbol%29.svg" alt="" decoding="async" />
-        Codex
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        Today
       </div>
-      <div class="percent"><span data-field="codex.remaining">--</span><small>%</small></div>
-      <div class="remain">remain</div>
+      <div class="percent"><span data-field="today.big">--</span></div>
+      <div class="remain" data-field="today.label">--</div>
       <div class="metrics">
         <div class="metric">
-          <div class="line"><span data-field="codex.short.label">--</span><span>reset <b data-field="codex.short.reset">--:--</b></span></div>
-          <div class="bar"><div class="fill" data-bar="codex.short.pct" style="--pct:0%"></div></div>
+          <div class="line"><span data-field="today.a.n">--</span><span data-field="today.a.v">--</span></div>
+          <div class="bar"><div class="fill" data-bar="today.a.b" style="--pct:0%"></div></div>
         </div>
         <div class="metric">
-          <div class="line"><span data-field="codex.week.label">--</span><span data-field="codex.week.reset">--</span></div>
-          <div class="bar"><div class="fill" data-bar="codex.week.pct" style="--pct:0%"></div></div>
+          <div class="line"><span data-field="today.b.n">--</span><span data-field="today.b.v">--</span></div>
+          <div class="bar"><div class="fill" data-bar="today.b.b" style="--pct:0%"></div></div>
         </div>
       </div>
     </section>
@@ -327,7 +327,8 @@
     }
 
     function normalizeQuota(raw) {
-      const platforms = raw.platforms || {};
+      const plan = raw.plan || {};
+      const today = raw.today || {};
       return {
         updatedAt: String(raw.updatedAt || raw.footer?.time || ""),
         footer: {
@@ -335,26 +336,31 @@
           tokens: String(raw.footer?.tokens ?? "--"),
           time: String(raw.footer?.time ?? raw.updatedAt ?? "--:--")
         },
-        platforms: {
-          claude: normalizePlatform(platforms.claude),
-          codex: normalizePlatform(platforms.codex)
-        }
+        plan: normalizePlan(plan),
+        today: normalizeToday(today)
       };
     }
 
-    function normalizePlatform(platform = {}) {
+    // Row 0: OpenCode Go plan quota snapshot (5h rolling / weekly / monthly).
+    function normalizePlan(plan = {}) {
+      const weekly = plan.weekly || {};
+      const rolling = plan.rolling || {};
+      const monthly = plan.monthly || {};
       return {
-        remaining: clampPercent(platform.remaining),
-        short: normalizeWindow(platform.short),
-        week: normalizeWindow(platform.week)
+        big: `${clampPercent(weekly.pct)}%`,
+        label: "week used",
+        a: { n: "5h", v: `${clampPercent(rolling.pct)}%`, b: clampPercent(rolling.pct) },
+        b: { n: "monthly", v: `${clampPercent(monthly.pct)}%`, b: clampPercent(monthly.pct) }
       };
     }
 
-    function normalizeWindow(windowData = {}) {
+    // Row 1: today's real usage from local logs (no progress bars, b = -1).
+    function normalizeToday(today = {}) {
       return {
-        label: String(windowData.label ?? "--"),
-        pct: clampPercent(windowData.pct),
-        reset: String(windowData.reset ?? "--")
+        big: String(today.tokensShort ?? "--"),
+        label: "today tokens",
+        a: { n: "cost", v: String(today.cost ?? "--"), b: -1 },
+        b: { n: "7d", v: String(today.weekShort ?? "--"), b: -1 }
       };
     }
 
@@ -367,8 +373,8 @@
     function renderQuota(quota) {
       const viewModel = {
         footer: quota.footer,
-        claude: quota.platforms.claude,
-        codex: quota.platforms.codex
+        plan: quota.plan,
+        today: quota.today
       };
 
       document.querySelectorAll("[data-field]").forEach((node) => {
@@ -378,8 +384,15 @@
       });
 
       document.querySelectorAll("[data-bar]").forEach((node) => {
-        const value = clampPercent(getPath(viewModel, node.dataset.bar));
-        const pct = `${value}%`;
+        const raw = Number(getPath(viewModel, node.dataset.bar));
+        const value = Number.isFinite(raw) ? raw : -1;
+        const barEl = node.closest(".bar");
+        if (value < 0) {
+          if (barEl) barEl.style.display = "none";
+          return;
+        }
+        if (barEl) barEl.style.display = "";
+        const pct = `${clampPercent(value)}%`;
         if (node.style.getPropertyValue("--pct") !== pct) node.style.setProperty("--pct", pct);
       });
     }
@@ -411,17 +424,18 @@
           t: quota.footer.time
         },
         p: {
-          c: compactPlatform(quota.platforms.claude),
-          x: compactPlatform(quota.platforms.codex)
+          plan: compactRow(quota.plan),
+          today: compactRow(quota.today)
         }
       };
     }
 
-    function compactPlatform(platform) {
+    function compactRow(row) {
       return {
-        r: platform.remaining,
-        s: { l: platform.short.label, p: platform.short.pct, z: platform.short.reset },
-        w: { l: platform.week.label, p: platform.week.pct, z: platform.week.reset }
+        v: row.big,
+        l: row.label,
+        a: { n: row.a.n, v: row.a.v, b: row.a.b },
+        b: { n: row.b.n, v: row.b.v, b: row.b.b }
       };
     }
 

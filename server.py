@@ -54,27 +54,44 @@ def clamp_percent(value):
     return max(0, min(100, number))
 
 
-def compact_window(window_data):
-    window_data = window_data or {}
+def compact_plan_row(plan):
+    # Row 0 "OpenCode Go": the official Go plan usage snapshot. The headline is
+    # the weekly used percentage; the two window bars are the 5-hour rolling
+    # window and the monthly allowance.
+    plan = plan or {}
+    weekly = plan.get("weekly") or {}
+    rolling = plan.get("rolling") or {}
+    monthly = plan.get("monthly") or {}
     return {
-        "l": str(window_data.get("label", "--")),
-        "p": clamp_percent(window_data.get("pct")),
-        "z": str(window_data.get("reset", "--")),
+        "v": f"{clamp_percent(weekly.get('pct'))}%",
+        "l": "week used",
+        "a": {
+            "n": "5h",
+            "v": f"{clamp_percent(rolling.get('pct'))}%",
+            "b": clamp_percent(rolling.get("pct")),
+        },
+        "b": {
+            "n": "monthly",
+            "v": f"{clamp_percent(monthly.get('pct'))}%",
+            "b": clamp_percent(monthly.get("pct")),
+        },
     }
 
 
-def compact_platform(platform):
-    platform = platform or {}
+def compact_today_row(today):
+    # Row 1 "Today": real usage from local logs. b=-1 means "no bar" so the
+    # device renders these as plain text lines, not progress bars.
+    today = today or {}
     return {
-        "r": clamp_percent(platform.get("remaining")),
-        "s": compact_window(platform.get("short")),
-        "w": compact_window(platform.get("week")),
+        "v": str(today.get("tokensShort", "--")),
+        "l": "today tokens",
+        "a": {"n": "cost", "v": str(today.get("cost", "--")), "b": -1},
+        "b": {"n": "7d", "v": str(today.get("weekShort", "--")), "b": -1},
     }
 
 
 def compact_for_device(quota):
     footer = quota.get("footer") or {}
-    platforms = quota.get("platforms") or {}
     return {
         "u": str(quota.get("updatedAt") or footer.get("time") or ""),
         "f": {
@@ -83,8 +100,8 @@ def compact_for_device(quota):
             "t": str(footer.get("time") or quota.get("updatedAt") or "--:--"),
         },
         "p": {
-            "c": compact_platform(platforms.get("claude")),
-            "x": compact_platform(platforms.get("codex")),
+            "plan": compact_plan_row(quota.get("plan")),
+            "today": compact_today_row(quota.get("today")),
         },
     }
 

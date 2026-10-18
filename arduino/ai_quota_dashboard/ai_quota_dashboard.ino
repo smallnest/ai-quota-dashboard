@@ -21,21 +21,23 @@ constexpr int SCREEN_H = 240;
 
 struct UsageRow {
   const char *name;
-  uint8_t remainingPct;
-  char shortLabel[16];
-  uint8_t shortPct;
-  char shortReset[16];
-  char weekLabel[16];
-  uint8_t weekPct;
-  char weekReset[18];
+  char bigValue[16];   // headline number, e.g. "78%" (plan) or "13.3M" (today)
+  char bigLabel[16];   // caption under the headline, e.g. "week used"
+  char line1[16];      // first window label, e.g. "session" or "cost"
+  char val1[16];       // first window value, e.g. "21%" or "$5.73"
+  int8_t bar1;         // 0-100 progress bar; -1 = text only, no bar
+  char line2[16];      // second window label, e.g. "monthly" or "7d"
+  char val2[16];       // second window value
+  int8_t bar2;
   uint16_t accent;
-  uint16_t accentSoft;
   bool claudeIcon;
 };
 
+// Claude/Codex run against OpenCode Go (not official Anthropic/OpenAI quota),
+// so rows show the real Go plan snapshot + local usage.
 UsageRow rows[] = {
-    {"Claude", 0, "--", 0, "--:--", "--", 0, "--", 0xFBC9, 0xFD8B, true},
-    {"Codex", 0, "--", 0, "--:--", "--", 0, "--", 0x06BF, 0x4F9F, false},
+    {"OpenCode Go", "--", "--", "5h", "--", -1, "monthly", "--", -1, 0xFBC9, true},
+    {"Today", "--", "--", "cost", "--", -1, "7d", "--", -1, 0x06BF, false},
 };
 
 char footerCost[12] = "--";
@@ -132,16 +134,18 @@ uint8_t readPercent(JsonVariantConst value, uint8_t fallback) {
   return static_cast<uint8_t>(pct);
 }
 
-void updateWindow(JsonVariantConst source, char *label, size_t labelSize, uint8_t &pct, char *reset, size_t resetSize) {
-  copyText(label, labelSize, source["l"] | "--");
-  pct = readPercent(source["p"], pct);
-  copyText(reset, resetSize, source["z"] | "--");
+void updateWindow(JsonVariantConst source, char *label, size_t labelSize, char *val, size_t valSize, int8_t &bar) {
+  copyText(label, labelSize, source["n"] | "--");
+  copyText(val, valSize, source["v"] | "--");
+  int pct = source["b"] | -1;
+  bar = (pct >= 0 && pct <= 100) ? static_cast<int8_t>(pct) : -1;
 }
 
 void updateRowFromJson(UsageRow &row, JsonVariantConst source) {
-  row.remainingPct = readPercent(source["r"], row.remainingPct);
-  updateWindow(source["s"], row.shortLabel, sizeof(row.shortLabel), row.shortPct, row.shortReset, sizeof(row.shortReset));
-  updateWindow(source["w"], row.weekLabel, sizeof(row.weekLabel), row.weekPct, row.weekReset, sizeof(row.weekReset));
+  copyText(row.bigValue, sizeof(row.bigValue), source["v"] | "--");
+  copyText(row.bigLabel, sizeof(row.bigLabel), source["l"] | "--");
+  updateWindow(source["a"], row.line1, sizeof(row.line1), row.val1, sizeof(row.val1), row.bar1);
+  updateWindow(source["b"], row.line2, sizeof(row.line2), row.val2, sizeof(row.val2), row.bar2);
 }
 
 bool applyQuotaPayload(const String &payload) {
@@ -158,8 +162,8 @@ bool applyQuotaPayload(const String &payload) {
   copyText(footerTokens, sizeof(footerTokens), footer["k"] | "--");
   copyText(footerTime, sizeof(footerTime), footer["t"] | "--:--");
 
-  updateRowFromJson(rows[0], doc["p"]["c"]);
-  updateRowFromJson(rows[1], doc["p"]["x"]);
+  updateRowFromJson(rows[0], doc["p"]["plan"]);
+  updateRowFromJson(rows[1], doc["p"]["today"]);
   notifyDebug("JSON_OK dashboard updated");
   return true;
 }
@@ -325,8 +329,8 @@ void drawBar(int x, int y, int w, uint8_t pct, uint16_t accent, uint16_t glow) {
 
 void drawRow(const UsageRow &row, int y) {
   const int leftCenterX = 80;
-  const int barX = 154;
-  const int barW = 144;
+  const int rightX = 154;
+  const int rightW = 144;
 
   canvas.setTextDatum(TL_DATUM);
   int nameW = canvas.textWidth(row.name, 2);
@@ -342,32 +346,33 @@ void drawRow(const UsageRow &row, int y) {
   canvas.setTextColor(C_TEXT);
   canvas.drawString(row.name, brandX + 23, y + 1, 2);
 
+  // Headline number in font 4 (full ASCII — the seven-segment font 7 has no
+  // letters, so "13.3M"/"78%" would render blank with it).
   canvas.setTextColor(row.accent);
-  String pct = String(row.remainingPct);
-  int pctW = canvas.textWidth(pct, 7);
-  int symbolW = canvas.textWidth("%", 4);
-  int pctX = leftCenterX - (pctW + symbolW + 2) / 2;
-  canvas.drawString(pct, pctX, y + 25, 7);
-  canvas.drawString("%", pctX + pctW + 2, y + 46, 4);
+  int bigW = canvas.textWidth(row.bigValue, 4);
+  canvas.drawString(row.bigValue, leftCenterX - bigW / 2, y + 24, 4);
+  canvas.setTextColor(C_MUTED);
+  canvas.drawString(row.bigLabel, leftCenterX - canvas.textWidth(row.bigLabel, 2) / 2, y + 66, 2);
 
-  canvas.setTextColor(row.accent);
-  canvas.setTextDatum(TC_DATUM);
-  canvas.drawString("usage", leftCenterX, y + 72, 2);
-  canvas.setTextDatum(TL_DATUM);
-
+  // First window line, with an optional progress bar below it.
   canvas.setTextColor(C_TEXT);
-  canvas.drawString(row.shortLabel, barX, y + 15, 2);
+  canvas.drawString(row.line1, rightX, y + 15, 2);
   canvas.setTextDatum(TR_DATUM);
-  canvas.drawString(String("reset ") + row.shortReset, barX + barW, y + 15, 2);
+  canvas.drawString(row.val1, rightX + rightW, y + 15, 2);
   canvas.setTextDatum(TL_DATUM);
-  drawBar(barX, y + 35, barW, row.shortPct, row.accent, row.accentSoft);
+  if (row.bar1 >= 0) {
+    drawBar(rightX, y + 35, rightW, static_cast<uint8_t>(row.bar1), row.accent, row.accent);
+  }
 
+  // Second window line.
   canvas.setTextColor(C_TEXT);
-  canvas.drawString(row.weekLabel, barX, y + 51, 2);
+  canvas.drawString(row.line2, rightX, y + 51, 2);
   canvas.setTextDatum(TR_DATUM);
-  canvas.drawString(row.weekReset, barX + barW, y + 51, 2);
+  canvas.drawString(row.val2, rightX + rightW, y + 51, 2);
   canvas.setTextDatum(TL_DATUM);
-  drawBar(barX, y + 71, barW, row.weekPct, row.accent, row.accentSoft);
+  if (row.bar2 >= 0) {
+    drawBar(rightX, y + 71, rightW, static_cast<uint8_t>(row.bar2), row.accent, row.accent);
+  }
 }
 
 void drawFooter() {
