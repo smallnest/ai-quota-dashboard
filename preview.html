@@ -5,214 +5,240 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Wio Terminal AI Quota Dashboard Preview</title>
   <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      min-width: 0;
+    }
+
     :root {
       color-scheme: dark;
+      interpolate-size: allow-keywords;
       font-family: Inter, "Segoe UI", Arial, sans-serif;
-      background: #101820;
+      --bg: oklch(0.13 0.02 240);
+      --text: oklch(0.93 0.02 230);
+      --muted: oklch(0.72 0.035 220);
+      --track: oklch(0.2 0.03 235);
+      --track-edge: oklch(0.32 0.045 235);
+      --rule: oklch(0.34 0.045 235);
+      --footer-bg: oklch(0.08 0.02 235);
+      --panel: oklch(0.16 0.03 240);
+      --panel-border: oklch(0.35 0.04 230);
+      /* Default accent matches the Overview page; the screen swaps it per page. */
+      --accent: oklch(0.68 0.19 45);
+      --accent-soft: color-mix(in oklch, var(--accent) 55%, oklch(0.93 0.02 230));
+      --accent-glow: color-mix(in oklch, var(--accent) 55%, transparent);
     }
 
     body {
-      min-height: 100vh;
       margin: 0;
+      min-block-size: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
+      font-synthesis: none;
+      text-wrap: pretty;
+      overflow-wrap: break-word;
       background:
-        radial-gradient(circle at 50% 0%, rgba(41, 78, 97, 0.22), transparent 34%),
-        #101820;
+        radial-gradient(circle at 50% 0%, oklch(0.3 0.06 230 / 0.24), transparent 34%),
+        var(--bg);
     }
 
     .stage {
       display: grid;
       gap: 14px;
       justify-items: center;
-      width: 320px;
+      inline-size: 320px;
     }
 
+    /* Pixel-accurate mirror of the Wio's 320x240 screen; absolute coordinates
+       below are screen coordinates, not responsive layout, so they stay in px. */
     .screen {
-      width: 320px;
-      height: 240px;
       position: relative;
-      overflow: hidden;
+      inline-size: 320px;
+      block-size: 240px;
+      overflow: clip;
       contain: layout paint;
       background:
-        linear-gradient(180deg, rgba(18, 38, 48, 0.55) 0%, rgba(0, 4, 8, 0.08) 58%),
-        #000408;
-      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+        linear-gradient(180deg, oklch(0.16 0.03 235 / 0.55) 0%, transparent 58%),
+        oklch(0.05 0.015 235);
+      box-shadow: 0 18px 60px oklch(0 0 0 / 0.5);
+      color: var(--text);
     }
 
-    .screen::before {
-      content: "";
+    .page-title {
       position: absolute;
-      left: 16px;
-      right: 16px;
-      top: 112px;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(139, 179, 207, 0.34), transparent);
+      inset-block-start: 8px;
+      inset-inline-start: 16px;
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 16px;
+      text-wrap: balance;
     }
 
-    .screen::after {
-      content: "";
+    .page-indicator {
       position: absolute;
-      left: 144px;
-      top: 22px;
-      bottom: 35px;
-      width: 1px;
-      background: linear-gradient(180deg, transparent, rgba(139, 179, 207, 0.26), transparent);
+      inset-block-start: 8px;
+      inset-inline-end: 16px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 16px;
+      font-variant-numeric: tabular-nums;
     }
 
-    .row {
+    .title-rule {
       position: absolute;
-      left: 22px;
-      right: 22px;
-      height: 88px;
+      inset-block-start: 34px;
+      inset-inline-start: 16px;
+      inset-inline-end: 16px;
+      block-size: 1px;
+      background: var(--rule);
     }
 
-    .row.claude { top: 16px; --accent: #ff7a4f; --soft: #ffb15d; --glow: rgba(255, 74, 43, 0.58); }
-    .row.codex { top: 116px; --accent: #00d7ff; --soft: #48f0ff; --glow: rgba(0, 119, 255, 0.7); }
-
-    .brand {
+    .big-value {
       position: absolute;
-      left: 0;
-      top: 0;
-      width: 116px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      color: #e4efff;
+      inset-block-start: 52px;
+      inset-inline-start: 16px;
+      color: var(--accent);
+      font-size: 30px;
+      line-height: 26px;
+      font-weight: 800;
+      text-shadow: 0 0 10px var(--accent-glow);
+      text-wrap: balance;
+    }
+
+    .big-label {
+      position: absolute;
+      inset-block-start: 92px;
+      inset-inline-start: 16px;
+      color: var(--muted);
       font-size: 13px;
       font-weight: 700;
+      line-height: 16px;
     }
 
-    .icon {
-      width: 17px;
-      height: 17px;
-      object-fit: contain;
-      display: block;
-    }
-
-    .codex .icon {
-      filter: brightness(0) saturate(100%) invert(80%) sepia(85%) saturate(2679%) hue-rotate(139deg) brightness(103%) contrast(103%);
-    }
-
-    .percent {
+    .big-bar {
       position: absolute;
-      left: 0;
-      top: 23px;
-      width: 116px;
-      color: var(--accent);
-      font-size: 42px;
-      line-height: 0.9;
-      font-weight: 800;
-      letter-spacing: 0;
-      text-align: center;
-      text-shadow: 0 0 10px var(--glow);
+      inset-block-start: 116px;
+      inset-inline-start: 16px;
+      inline-size: 130px;
+      block-size: 10px;
+      border-radius: 999px;
+      background: var(--track);
+      border: 1px solid var(--track-edge);
+      overflow: clip;
     }
 
-    .percent small {
-      font-size: 17px;
-      margin-left: 1px;
+    .big-bar .fill {
+      inline-size: var(--pct, 0%);
+      block-size: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--accent), var(--accent-soft));
+      box-shadow: 0 5px 9px var(--accent-glow);
     }
 
-    .remain {
+    .h-divider {
       position: absolute;
-      left: 0;
-      top: 70px;
-      width: 116px;
-      color: var(--accent);
-      font-size: 11px;
-      font-weight: 700;
-      text-align: center;
+      inset-block-start: 46px;
+      inset-inline-start: 164px;
+      inline-size: 1px;
+      block-size: 140px;
+      background: var(--rule);
     }
 
-    .metrics {
+    .hint {
       position: absolute;
-      left: 132px;
-      top: 13px;
-      width: 144px;
-      color: #e4efff;
-      font-size: 11px;
+      inset-block-start: 176px;
+      inset-inline-start: 16px;
+      color: oklch(0.5 0.04 220);
+      font-size: 12px;
       font-weight: 700;
     }
 
-    .metric + .metric { margin-top: 10px; }
-
-    .line {
+    .r {
+      position: absolute;
+      inset-inline-start: 178px;
+      inset-inline-end: 16px;
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      margin-bottom: 5px;
+      gap: 8px;
+      font-size: 12px;
+      line-height: 16px;
       white-space: nowrap;
     }
 
-    .line span:first-child {
-      color: var(--soft);
+    .r:nth-child(1) { inset-block-start: 48px; }
+    .r:nth-child(2) { inset-block-start: 82px; }
+    .r:nth-child(3) { inset-block-start: 116px; }
+    .r:nth-child(4) { inset-block-start: 150px; }
+
+    .r-label {
+      color: var(--muted);
+      font-weight: 700;
+      overflow: clip;
+      text-overflow: ellipsis;
     }
 
-    .bar {
-      height: 8px;
-      border-radius: 999px;
-      background: #142330;
-      border: 1px solid #29445b;
-      box-sizing: border-box;
-      overflow: hidden;
-    }
-
-    .fill {
-      width: var(--pct);
-      height: 100%;
-      border-radius: inherit;
-      background: linear-gradient(90deg, var(--accent), var(--soft));
-      box-shadow: 0 5px 9px var(--glow);
+    .r-value {
+      color: var(--text);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
     }
 
     .footer {
       position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 28px;
+      inset-inline: 0;
+      inset-block-end: 0;
+      block-size: 32px;
       display: grid;
-      grid-template-columns: 118px 100px 76px;
+      grid-template-columns: repeat(3, 1fr);
       align-items: center;
-      justify-content: center;
-      border-top: 1px solid rgba(139, 179, 207, 0.24);
-      background: linear-gradient(180deg, rgba(9, 20, 27, 0.1), rgba(0, 9, 14, 0.86));
-      text-align: center;
-      color: #e4efff;
+      border-block-start: 1px solid var(--rule);
+      background: linear-gradient(180deg, oklch(0.12 0.02 235 / 0.1), var(--footer-bg));
       font-size: 11px;
       font-weight: 700;
     }
 
-    .footer span + span {
-      min-width: 0;
-      padding-left: 0;
-      border-left: 1px solid rgba(139, 179, 207, 0.28);
-      overflow: visible;
+    .footer > span {
+      text-align: center;
+      overflow: clip;
       white-space: nowrap;
+      text-overflow: ellipsis;
+      padding-inline: 4px;
+    }
+
+    .footer > span + span {
+      border-inline-start: 1px solid var(--rule);
     }
 
     .controls {
-      width: 320px;
+      inline-size: 320px;
       display: flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 8px;
-      color: #9fb9ce;
+      color: oklch(0.68 0.04 220);
       font-size: 12px;
     }
 
     .controls button {
-      height: 28px;
-      border: 1px solid rgba(139, 179, 207, 0.32);
+      block-size: 28px;
+      border: 1px solid var(--panel-border);
       border-radius: 8px;
-      background: #132331;
-      color: #e4efff;
+      background: var(--panel);
+      color: var(--text);
       font: inherit;
       font-weight: 700;
-      padding: 0 10px;
+      padding-inline: 10px;
       cursor: pointer;
+      user-select: none;
+    }
+
+    .controls button.is-active {
+      border-color: var(--accent);
+      color: var(--accent-soft);
     }
 
     .controls button:disabled {
@@ -220,76 +246,67 @@
       opacity: 0.46;
     }
 
+    .controls button:focus-visible {
+      outline: max(2px, 0.08em) solid currentColor;
+      outline-offset: 2px;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .controls button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+    }
+
     .status {
       flex: 1 1 100%;
       min-width: 0;
-      height: 16px;
-      overflow: hidden;
+      block-size: 16px;
+      overflow: clip;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
+    .page-nav {
+      justify-content: center;
+    }
+
     .debug-panel {
-      width: 320px;
-      height: 148px;
+      inline-size: 320px;
+      block-size: 148px;
       overflow: auto;
+      scrollbar-gutter: stable;
       box-sizing: border-box;
       padding: 8px;
-      border: 1px solid rgba(139, 179, 207, 0.22);
+      border: 1px solid var(--panel-border);
       border-radius: 8px;
-      background: rgba(0, 8, 13, 0.72);
-      color: #b7d3e8;
+      background: oklch(0.08 0.015 235 / 0.72);
+      color: oklch(0.78 0.03 220);
       font-family: Consolas, "SFMono-Regular", monospace;
       font-size: 11px;
       line-height: 1.45;
       white-space: pre-wrap;
       contain: layout paint;
     }
-
   </style>
 </head>
 <body>
   <div class="stage">
   <main class="screen" aria-label="Wio Terminal 320 by 240 dashboard preview">
-    <section class="row claude">
-      <div class="brand">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2L4.5 9.5V14.5L12 22L19.5 14.5V9.5L12 2Z"/></svg>
-        OpenCode Go
-      </div>
-      <div class="percent"><span data-field="plan.big">--</span></div>
-      <div class="remain" data-field="plan.label">--</div>
-      <div class="metrics">
-        <div class="metric">
-          <div class="line"><span data-field="plan.a.n">--</span><span data-field="plan.a.v">--</span></div>
-          <div class="bar"><div class="fill" data-bar="plan.a.b" style="--pct:0%"></div></div>
-        </div>
-        <div class="metric">
-          <div class="line"><span data-field="plan.b.n">--</span><span data-field="plan.b.v">--</span></div>
-          <div class="bar"><div class="fill" data-bar="plan.b.b" style="--pct:0%"></div></div>
-        </div>
-      </div>
+    <header class="page-title" data-title>Overview</header>
+    <span class="page-indicator" data-indicator>1/4</span>
+    <div class="title-rule"></div>
+    <div class="big-value" data-big>--</div>
+    <div class="big-label" data-big-label>--</div>
+    <div class="big-bar" data-big-bar hidden><div class="fill"></div></div>
+    <div class="h-divider"></div>
+    <section class="rows" aria-label="page metrics">
+      <div class="r"><span class="r-label">--</span><span class="r-value">--</span></div>
+      <div class="r"><span class="r-label">--</span><span class="r-value">--</span></div>
+      <div class="r"><span class="r-label">--</span><span class="r-value">--</span></div>
+      <div class="r"><span class="r-label">--</span><span class="r-value">--</span></div>
     </section>
-
-    <section class="row codex">
-      <div class="brand">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-        Today
-      </div>
-      <div class="percent"><span data-field="today.big">--</span></div>
-      <div class="remain" data-field="today.label">--</div>
-      <div class="metrics">
-        <div class="metric">
-          <div class="line"><span data-field="today.a.n">--</span><span data-field="today.a.v">--</span></div>
-          <div class="bar"><div class="fill" data-bar="today.a.b" style="--pct:0%"></div></div>
-        </div>
-        <div class="metric">
-          <div class="line"><span data-field="today.b.n">--</span><span data-field="today.b.v">--</span></div>
-          <div class="bar"><div class="fill" data-bar="today.b.b" style="--pct:0%"></div></div>
-        </div>
-      </div>
-    </section>
-
-    <footer class="footer"><span>Today <b data-field="footer.cost">--</b></span><span data-field="footer.tokens">--</span><span data-field="footer.time">--:--</span></footer>
+    <div class="hint">&lt; &gt; switch page</div>
+    <footer class="footer"><span data-footer-brand>Magpie</span><span data-footer-tokens>--</span><span data-footer-time>--:--</span></footer>
   </main>
   <div class="controls">
     <button type="button" data-action="connect">Connect Wio</button>
@@ -297,6 +314,14 @@
     <button type="button" data-action="diag">Diag</button>
     <button type="button" data-action="sync" disabled>Sync</button>
     <span class="status" data-status>waiting for server</span>
+  </div>
+  <div class="controls page-nav">
+    <button type="button" data-action="page-prev" aria-label="previous page">&#9664;</button>
+    <button type="button" data-page="0">Overview</button>
+    <button type="button" data-page="1">Requests</button>
+    <button type="button" data-page="2">Sessions</button>
+    <button type="button" data-page="3">Context</button>
+    <button type="button" data-action="page-next" aria-label="next page">&#9654;</button>
   </div>
   <pre class="debug-panel" data-debug-log>debug log ready</pre>
   </div>
@@ -306,13 +331,37 @@
     const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
     const RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
     const TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
-    const state = { quota: null, quotaHash: "", characteristic: null, txCharacteristic: null, connected: false, device: null };
+    const PAGE_TITLES = ["Overview", "Requests", "Sessions", "Context"];
+    const PAGE_ACCENTS = [
+      { accent: "oklch(0.68 0.19 45)" },
+      { accent: "oklch(0.72 0.15 220)" },
+      { accent: "oklch(0.72 0.16 160)" },
+      { accent: "oklch(0.62 0.17 315)" },
+    ];
+
+    const state = { quota: null, quotaHash: "", pageIndex: 0, characteristic: null, txCharacteristic: null, connected: false, device: null };
+
+    const screenEl = document.querySelector(".screen");
+    const titleEl = document.querySelector("[data-title]");
+    const indicatorEl = document.querySelector("[data-indicator]");
+    const bigEl = document.querySelector("[data-big]");
+    const bigLabelEl = document.querySelector("[data-big-label]");
+    const barEl = document.querySelector("[data-big-bar]");
+    const fillEl = barEl.querySelector(".fill");
+    const rowEls = Array.from(document.querySelectorAll(".r"));
+    const footerBrandEl = document.querySelector("[data-footer-brand]");
+    const footerTokensEl = document.querySelector("[data-footer-tokens]");
+    const footerTimeEl = document.querySelector("[data-footer-time]");
+    const pageButtons = Array.from(document.querySelectorAll('[data-page]'));
+
     const statusEl = document.querySelector("[data-status]");
     const debugEl = document.querySelector("[data-debug-log]");
     const connectButton = document.querySelector('[data-action="connect"]');
     const scanAnyButton = document.querySelector('[data-action="scan-any"]');
     const diagButton = document.querySelector('[data-action="diag"]');
     const syncButton = document.querySelector('[data-action="sync"]');
+    const prevButton = document.querySelector('[data-action="page-prev"]');
+    const nextButton = document.querySelector('[data-action="page-next"]');
 
     function logDebug(message, detail) {
       const time = new Date().toLocaleTimeString();
@@ -322,79 +371,96 @@
       console.log(line);
     }
 
-    function getPath(source, path) {
-      return path.split(".").reduce((value, key) => value?.[key], source);
-    }
-
-    function normalizeQuota(raw) {
-      const plan = raw.plan || {};
-      const today = raw.today || {};
-      return {
-        updatedAt: String(raw.updatedAt || raw.footer?.time || ""),
-        footer: {
-          cost: String(raw.footer?.cost ?? "--"),
-          tokens: String(raw.footer?.tokens ?? "--"),
-          time: String(raw.footer?.time ?? raw.updatedAt ?? "--:--")
-        },
-        plan: normalizePlan(plan),
-        today: normalizeToday(today)
-      };
-    }
-
-    // Row 0: OpenCode Go plan quota snapshot (5h rolling / weekly / monthly).
-    function normalizePlan(plan = {}) {
-      const weekly = plan.weekly || {};
-      const rolling = plan.rolling || {};
-      const monthly = plan.monthly || {};
-      return {
-        big: `${clampPercent(weekly.pct)}%`,
-        label: "week used",
-        a: { n: "5h", v: `${clampPercent(rolling.pct)}%`, b: clampPercent(rolling.pct) },
-        b: { n: "monthly", v: `${clampPercent(monthly.pct)}%`, b: clampPercent(monthly.pct) }
-      };
-    }
-
-    // Row 1: today's real usage from local logs (no progress bars, b = -1).
-    function normalizeToday(today = {}) {
-      return {
-        big: String(today.tokensShort ?? "--"),
-        label: "today tokens",
-        a: { n: "cost", v: String(today.cost ?? "--"), b: -1 },
-        b: { n: "7d", v: String(today.weekShort ?? "--"), b: -1 }
-      };
-    }
-
     function clampPercent(value) {
       const number = Number(value);
       if (!Number.isFinite(number)) return 0;
       return Math.max(0, Math.min(100, Math.round(number)));
     }
 
-    function renderQuota(quota) {
-      const viewModel = {
-        footer: quota.footer,
-        plan: quota.plan,
-        today: quota.today
+    function rowLabelValue(row) {
+      // Raw quota stores rows as [label, value] pairs; the compact device form
+      // uses {n, v}. Accept both.
+      if (Array.isArray(row)) return { n: String(row[0] ?? ""), v: String(row[1] ?? "") };
+      return { n: String(row.n ?? ""), v: String(row.v ?? "") };
+    }
+
+    function normalizePage(page, index) {
+      page = page || {};
+      const rows = (Array.isArray(page.r) ? page.r : []).slice(0, 4);
+      const normalizedRows = [];
+      for (let i = 0; i < 4; i++) normalizedRows.push(rowLabelValue(rows[i]));
+      const bar = Number(page.b);
+      return {
+        t: String(page.t ?? PAGE_TITLES[index]).slice(0, 15),
+        v: String(page.v ?? "--"),
+        l: String(page.l ?? "--").slice(0, 15),
+        b: Number.isFinite(bar) && bar >= 0 ? clampPercent(bar) : -1,
+        rows: normalizedRows,
       };
+    }
 
-      document.querySelectorAll("[data-field]").forEach((node) => {
-        const value = getPath(viewModel, node.dataset.field);
-        const text = String(value ?? "--");
-        if (node.textContent !== text) node.textContent = text;
+    function normalizeQuota(raw) {
+      const magpie = raw.magpie || {};
+      const footer = magpie.footer || {};
+      const rawPages = Array.isArray(magpie.pages) ? magpie.pages : [];
+      return {
+        updatedAt: String(raw.updatedAt || footer.time || ""),
+        footer: {
+          brand: String(footer.brand ?? "Magpie"),
+          tokens: String(footer.tokens ?? "--"),
+          time: String(footer.time ?? raw.updatedAt ?? "--:--"),
+        },
+        pages: [0, 1, 2, 3].map((i) => normalizePage(rawPages[i], i)),
+      };
+    }
+
+    function compactForDevice(quota) {
+      // Mirrors server.py compact_for_device so a direct Web Bluetooth "Sync"
+      // pushes the same 4-page frame the firmware expects.
+      return {
+        u: quota.updatedAt,
+        f: { c: quota.footer.brand, k: quota.footer.tokens, t: quota.footer.time },
+        p: quota.pages.map((page) => ({
+          t: page.t,
+          v: page.v,
+          l: page.l,
+          b: page.b,
+          r: page.rows.map((row) => ({ n: row.n, v: row.v })),
+        })),
+      };
+    }
+
+    function renderActivePage() {
+      const fallback = { t: PAGE_TITLES[state.pageIndex], v: "--", l: "--", b: -1, rows: [{ n: "", v: "" }, { n: "", v: "" }, { n: "", v: "" }, { n: "", v: "" }] };
+      const page = state.quota?.pages?.[state.pageIndex] || fallback;
+
+      screenEl.style.setProperty("--accent", PAGE_ACCENTS[state.pageIndex].accent);
+      titleEl.textContent = page.t;
+      indicatorEl.textContent = `${state.pageIndex + 1}/4`;
+      bigEl.textContent = page.v;
+      bigLabelEl.textContent = page.l;
+
+      barEl.hidden = page.b < 0;
+      if (page.b >= 0) fillEl.style.setProperty("--pct", `${page.b}%`);
+
+      rowEls.forEach((rowEl, i) => {
+        const row = page.rows[i] || { n: "", v: "" };
+        rowEl.children[0].textContent = row.n;
+        rowEl.children[1].textContent = row.v;
       });
 
-      document.querySelectorAll("[data-bar]").forEach((node) => {
-        const raw = Number(getPath(viewModel, node.dataset.bar));
-        const value = Number.isFinite(raw) ? raw : -1;
-        const barEl = node.closest(".bar");
-        if (value < 0) {
-          if (barEl) barEl.style.display = "none";
-          return;
-        }
-        if (barEl) barEl.style.display = "";
-        const pct = `${clampPercent(value)}%`;
-        if (node.style.getPropertyValue("--pct") !== pct) node.style.setProperty("--pct", pct);
-      });
+      if (state.quota) {
+        footerBrandEl.textContent = state.quota.footer.brand;
+        footerTokensEl.textContent = state.quota.footer.tokens;
+        footerTimeEl.textContent = state.quota.footer.time;
+      }
+
+      pageButtons.forEach((button, i) => button.classList.toggle("is-active", i === state.pageIndex));
+    }
+
+    function setPage(index) {
+      state.pageIndex = ((index % 4) + 4) % 4;
+      renderActivePage();
     }
 
     async function loadQuota({ sync = false, quiet = false } = {}) {
@@ -406,37 +472,13 @@
       state.quota = nextQuota;
       if (changed) {
         state.quotaHash = nextHash;
-        renderQuota(state.quota);
+        renderActivePage();
         statusEl.textContent = `server updated ${state.quota.updatedAt || "now"}`;
         logDebug("server quota loaded", { updatedAt: state.quota.updatedAt });
       } else if (!quiet) {
         statusEl.textContent = `server unchanged ${state.quota.updatedAt || "now"}`;
       }
       if (sync && state.connected && changed) await sendQuota();
-    }
-
-    function compactForDevice(quota) {
-      return {
-        u: quota.updatedAt,
-        f: {
-          c: quota.footer.cost,
-          k: quota.footer.tokens,
-          t: quota.footer.time
-        },
-        p: {
-          plan: compactRow(quota.plan),
-          today: compactRow(quota.today)
-        }
-      };
-    }
-
-    function compactRow(row) {
-      return {
-        v: row.big,
-        l: row.label,
-        a: { n: row.a.n, v: row.a.v, b: row.a.b },
-        b: { n: row.b.n, v: row.b.v, b: row.b.b }
-      };
     }
 
     function logBluetoothDiagnostics() {
@@ -543,6 +585,19 @@
       });
     });
 
+    prevButton.addEventListener("click", () => setPage(state.pageIndex - 1));
+    nextButton.addEventListener("click", () => setPage(state.pageIndex + 1));
+    pageButtons.forEach((button) => {
+      button.addEventListener("click", () => setPage(Number(button.dataset.page)));
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") { event.preventDefault(); setPage(state.pageIndex - 1); }
+      else if (event.key === "ArrowRight") { event.preventDefault(); setPage(state.pageIndex + 1); }
+      else if (event.key >= "1" && event.key <= "4") setPage(Number(event.key) - 1);
+    });
+
+    renderActivePage();
     loadQuota().catch((error) => {
       statusEl.textContent = error.message || "server failed";
       logDebug("server load failed", error.message);
