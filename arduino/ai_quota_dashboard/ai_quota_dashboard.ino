@@ -18,29 +18,36 @@ TFT_eSPI &canvas = tft;
 
 constexpr int SCREEN_W = 320;
 constexpr int SCREEN_H = 240;
+constexpr int PAGE_COUNT = 4;
 
-struct UsageRow {
-  const char *name;
-  char bigValue[16];   // headline number, e.g. "78%" (plan) or "13.3M" (today)
-  char bigLabel[16];   // caption under the headline, e.g. "week used"
-  char line1[16];      // first window label, e.g. "session" or "cost"
-  char val1[16];       // first window value, e.g. "21%" or "$5.73"
-  int8_t bar1;         // 0-100 progress bar; -1 = text only, no bar
-  char line2[16];      // second window label, e.g. "monthly" or "7d"
-  char val2[16];       // second window value
-  int8_t bar2;
+// One device page: headline value plus up to four label/value rows, mirroring
+// the magpie-usage-display project's Overview / Requests / Sessions / Context
+// pages. The payload always carries exactly PAGE_COUNT pages so the firmware
+// can index them without negotiating a count.
+struct PageRow {
+  char label[16];
+  char value[16];
+};
+
+struct Page {
+  char title[16];
+  char bigValue[16];
+  char bigLabel[16];
+  int8_t bar;   // 0-100 progress bar; -1 = no bar
+  PageRow rows[4];
   uint16_t accent;
-  bool claudeIcon;
 };
 
-// Claude/Codex run against OpenCode Go (not official Anthropic/OpenAI quota),
-// so rows show the real Go plan snapshot + local usage.
-UsageRow rows[] = {
-    {"OpenCode Go", "--", "--", "5h", "--", -1, "monthly", "--", -1, 0xFBC9, true},
-    {"Today", "--", "--", "cost", "--", -1, "7d", "--", -1, 0x06BF, false},
+Page pages[PAGE_COUNT] = {
+    {"Overview", "--", "--", -1, {{"", ""}, {"", ""}, {"", ""}, {"", ""}}, 0xFBC9},
+    {"Requests", "--", "--", -1, {{"", ""}, {"", ""}, {"", ""}, {"", ""}}, 0x06BF},
+    {"Sessions", "--", "--", -1, {{"", ""}, {"", ""}, {"", ""}, {"", ""}}, 0x2E9D},
+    {"Context", "--", "--", -1, {{"", ""}, {"", ""}, {"", ""}, {"", ""}}, 0xA913},
 };
 
-char footerCost[12] = "--";
+uint8_t currentPage = 0;
+
+char footerBrand[12] = "Magpie";
 char footerTokens[20] = "--";
 char footerTime[10] = "--:--";
 
@@ -60,20 +67,6 @@ bool oldBleConnected = false;
 
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-}
-
-uint16_t blend565(uint16_t from, uint16_t to, uint8_t amount) {
-  uint8_t r1 = ((from >> 11) & 0x1F) << 3;
-  uint8_t g1 = ((from >> 5) & 0x3F) << 2;
-  uint8_t b1 = (from & 0x1F) << 3;
-  uint8_t r2 = ((to >> 11) & 0x1F) << 3;
-  uint8_t g2 = ((to >> 5) & 0x3F) << 2;
-  uint8_t b2 = (to & 0x1F) << 3;
-
-  uint8_t r = r1 + ((static_cast<int>(r2) - r1) * amount) / 255;
-  uint8_t g = g1 + ((static_cast<int>(g2) - g1) * amount) / 255;
-  uint8_t b = b1 + ((static_cast<int>(b2) - b1) * amount) / 255;
-  return rgb565(r, g, b);
 }
 
 const uint16_t C_BG_TOP = rgb565(9, 20, 27);
@@ -114,43 +107,34 @@ void copyText(char *dest, size_t destSize, const char *src) {
     return;
   }
   if (src == nullptr) {
-    src = "--";
+    src = "";
   }
   strncpy(dest, src, destSize - 1);
   dest[destSize - 1] = '\0';
 }
 
-uint8_t readPercent(JsonVariantConst value, uint8_t fallback) {
-  if (value.isNull()) {
-    return fallback;
+void updatePageFromJson(Page &page, JsonVariantConst source) {
+  if (source.isNull()) {
+    return;
   }
-  int pct = value.as<int>();
-  if (pct < 0) {
-    return 0;
-  }
-  if (pct > 100) {
-    return 100;
-  }
-  return static_cast<uint8_t>(pct);
-}
-
-void updateWindow(JsonVariantConst source, char *label, size_t labelSize, char *val, size_t valSize, int8_t &bar) {
-  copyText(label, labelSize, source["n"] | "--");
-  copyText(val, valSize, source["v"] | "--");
+  copyText(page.title, sizeof(page.title), source["t"] | page.title);
+  copyText(page.bigValue, sizeof(page.bigValue), source["v"] | "--");
+  copyText(page.bigLabel, sizeof(page.bigLabel), source["l"] | "");
   int pct = source["b"] | -1;
-  bar = (pct >= 0 && pct <= 100) ? static_cast<int8_t>(pct) : -1;
-}
-
-void updateRowFromJson(UsageRow &row, JsonVariantConst source) {
-  copyText(row.bigValue, sizeof(row.bigValue), source["v"] | "--");
-  copyText(row.bigLabel, sizeof(row.bigLabel), source["l"] | "--");
-  updateWindow(source["a"], row.line1, sizeof(row.line1), row.val1, sizeof(row.val1), row.bar1);
-  updateWindow(source["b"], row.line2, sizeof(row.line2), row.val2, sizeof(row.val2), row.bar2);
+  page.bar = (pct >= 0 && pct <= 100) ? static_cast<int8_t>(pct) : -1;
+  JsonVariantConst rows = source["r"];
+  for (uint8_t i = 0; i < 4; i++) {
+    JsonVariantConst row = rows[i];
+    copyText(page.rows[i].label, sizeof(page.rows[i].label), row["n"] | "");
+    copyText(page.rows[i].value, sizeof(page.rows[i].value), row["v"] | "");
+  }
 }
 
 bool applyQuotaPayload(const String &payload) {
   debugLog(String("parse payload len=") + payload.length());
-  StaticJsonDocument<1536> doc;
+  // 753-byte payloads with ~60 small strings need headroom beyond the payload
+  // size; ArduinoJson counts this pool in bytes.
+  StaticJsonDocument<3072> doc;
   DeserializationError error = deserializeJson(doc, payload);
   if (error) {
     notifyDebug(String("JSON_ERROR ") + error.c_str());
@@ -158,12 +142,14 @@ bool applyQuotaPayload(const String &payload) {
   }
 
   JsonVariantConst footer = doc["f"];
-  copyText(footerCost, sizeof(footerCost), footer["c"] | "--");
+  copyText(footerBrand, sizeof(footerBrand), footer["c"] | "Magpie");
   copyText(footerTokens, sizeof(footerTokens), footer["k"] | "--");
   copyText(footerTime, sizeof(footerTime), footer["t"] | "--:--");
 
-  updateRowFromJson(rows[0], doc["p"]["plan"]);
-  updateRowFromJson(rows[1], doc["p"]["today"]);
+  JsonVariantConst pageList = doc["p"];
+  for (uint8_t i = 0; i < PAGE_COUNT; i++) {
+    updatePageFromJson(pages[i], pageList[i]);
+  }
   notifyDebug("JSON_OK dashboard updated");
   return true;
 }
@@ -230,176 +216,144 @@ void drawGradientBackground() {
   for (int y = 0; y < SCREEN_H; y++) {
     canvas.drawFastHLine(0, y, SCREEN_W, backgroundColorAt(y));
   }
+}
 
-  canvas.drawFastHLine(16, 112, 288, C_RULE);
-  canvas.drawFastVLine(144, 22, 183, rgb565(28, 49, 63));
+void drawFooter() {
+  canvas.fillRect(0, 208, SCREEN_W, 32, C_FOOTER_BG);
   canvas.drawFastHLine(0, 208, SCREEN_W, rgb565(31, 53, 68));
-  canvas.fillRect(0, 209, SCREEN_W, 31, C_FOOTER_BG);
+  canvas.setTextColor(C_TEXT);
+  canvas.setTextDatum(MC_DATUM);
+  canvas.drawString(footerBrand, 53, 225, 2);
+  canvas.drawFastVLine(106, 216, 18, rgb565(48, 75, 95));
+  canvas.drawString(footerTokens, 160, 225, 2);
+  canvas.drawFastVLine(214, 216, 18, rgb565(48, 75, 95));
+  canvas.drawString(footerTime, 267, 225, 2);
+  canvas.setTextDatum(TL_DATUM);
 }
 
-void restoreBackgroundRect(int x, int y, int w, int h) {
-  int startY = max(0, y);
-  int endY = min(SCREEN_H, y + h);
-  int startX = max(0, x);
-  int width = min(SCREEN_W - startX, w);
-
-  if (width <= 0) {
-    return;
-  }
-
-  for (int yy = startY; yy < endY; yy++) {
-    canvas.drawFastHLine(startX, yy, width, backgroundColorAt(yy));
-  }
-}
-
-void drawStaticOverlaysForRect(int y, int h) {
-  int y2 = y + h;
-  if (y <= 112 && y2 >= 112) {
-    canvas.drawFastHLine(16, 112, 288, C_RULE);
-  }
-  if (y <= 208 && y2 >= 208) {
-    canvas.drawFastHLine(0, 208, SCREEN_W, rgb565(31, 53, 68));
-  }
-
-  int vx1 = max(y, 22);
-  int vx2 = min(y2, 205);
-  if (vx2 > vx1) {
-    canvas.drawFastVLine(144, vx1, vx2 - vx1, rgb565(28, 49, 63));
-  }
-}
-
-void clearRowArea(int y) {
-  restoreBackgroundRect(0, y - 2, SCREEN_W, 94);
-  drawStaticOverlaysForRect(y - 2, 94);
-}
-
-void clearFooterArea() {
-  canvas.fillRect(0, 209, SCREEN_W, 31, C_FOOTER_BG);
-  canvas.drawFastHLine(0, 208, SCREEN_W, rgb565(31, 53, 68));
-}
-
-void drawThickLine(int x1, int y1, int x2, int y2, uint8_t thickness, uint16_t color) {
-  int radius = thickness / 2;
-  for (int dx = -radius; dx <= radius; dx++) {
-    for (int dy = -radius; dy <= radius; dy++) {
-      if (dx * dx + dy * dy <= radius * radius) {
-        canvas.drawLine(x1 + dx, y1 + dy, x2 + dx, y2 + dy, color);
-      }
-    }
-  }
-}
-
-void drawClaudeIcon(int cx, int cy, uint16_t color) {
-  for (int i = 0; i < 8; i++) {
-    float a = i * 0.785398f;
-    int x1 = cx + cos(a) * 2;
-    int y1 = cy + sin(a) * 2;
-    int x2 = cx + cos(a) * 7;
-    int y2 = cy + sin(a) * 7;
-    drawThickLine(x1, y1, x2, y2, 3, color);
-    canvas.fillCircle(x2, y2, 2, color);
-  }
-  canvas.fillCircle(cx, cy, 3, rgb565(0, 8, 13));
-}
-
-void drawCodexIcon(int cx, int cy, uint16_t color) {
-  for (int i = 0; i < 6; i++) {
-    float a = -1.570796f + i * 1.047198f;
-    int px = cx + cos(a) * 5;
-    int py = cy + sin(a) * 5;
-    canvas.drawCircle(px, py, 4, color);
-    canvas.drawCircle(px, py, 3, color);
-  }
-  canvas.fillCircle(cx, cy, 3, rgb565(0, 8, 13));
-  canvas.drawCircle(cx, cy, 2, color);
-}
-
-void drawBar(int x, int y, int w, uint8_t pct, uint16_t accent, uint16_t glow) {
+void drawBar(int x, int y, int w, uint8_t pct, uint16_t accent) {
   if (pct > 100) {
     pct = 100;
   }
   int fillW = max(5, (w * pct) / 100);
 
-  canvas.fillRoundRect(x, y, w, 8, 4, C_TRACK);
-  canvas.drawRoundRect(x, y, w, 8, 4, C_TRACK_EDGE);
-  canvas.fillRoundRect(x, y, fillW, 8, 4, accent);
+  canvas.fillRoundRect(x, y, w, 10, 5, C_TRACK);
+  canvas.drawRoundRect(x, y, w, 10, 5, C_TRACK_EDGE);
+  canvas.fillRoundRect(x, y, fillW, 10, 5, accent);
   canvas.drawFastHLine(x + 3, y + 1, max(0, fillW - 6), rgb565(255, 255, 255));
-  canvas.drawFastHLine(x + 2, y + 11, max(0, fillW - 4), glow);
 }
 
-void drawRow(const UsageRow &row, int y) {
-  const int leftCenterX = 80;
-  const int rightX = 154;
-  const int rightW = 144;
-
-  canvas.setTextDatum(TL_DATUM);
-  int nameW = canvas.textWidth(row.name, 2);
-  int brandW = 17 + 6 + nameW;
-  int brandX = leftCenterX - brandW / 2;
-
-  if (row.claudeIcon) {
-    drawClaudeIcon(brandX + 8, y + 11, row.accent);
-  } else {
-    drawCodexIcon(brandX + 8, y + 11, row.accent);
-  }
-
-  canvas.setTextColor(C_TEXT);
-  canvas.drawString(row.name, brandX + 23, y + 1, 2);
-
-  // Headline number in font 4 (full ASCII — the seven-segment font 7 has no
-  // letters, so "13.3M"/"78%" would render blank with it).
-  canvas.setTextColor(row.accent);
-  int bigW = canvas.textWidth(row.bigValue, 4);
-  canvas.drawString(row.bigValue, leftCenterX - bigW / 2, y + 24, 4);
-  canvas.setTextColor(C_MUTED);
-  canvas.drawString(row.bigLabel, leftCenterX - canvas.textWidth(row.bigLabel, 2) / 2, y + 66, 2);
-
-  // First window line, with an optional progress bar below it.
-  canvas.setTextColor(C_TEXT);
-  canvas.drawString(row.line1, rightX, y + 15, 2);
-  canvas.setTextDatum(TR_DATUM);
-  canvas.drawString(row.val1, rightX + rightW, y + 15, 2);
-  canvas.setTextDatum(TL_DATUM);
-  if (row.bar1 >= 0) {
-    drawBar(rightX, y + 35, rightW, static_cast<uint8_t>(row.bar1), row.accent, row.accent);
-  }
-
-  // Second window line.
-  canvas.setTextColor(C_TEXT);
-  canvas.drawString(row.line2, rightX, y + 51, 2);
-  canvas.setTextDatum(TR_DATUM);
-  canvas.drawString(row.val2, rightX + rightW, y + 51, 2);
-  canvas.setTextDatum(TL_DATUM);
-  if (row.bar2 >= 0) {
-    drawBar(rightX, y + 71, rightW, static_cast<uint8_t>(row.bar2), row.accent, row.accent);
-  }
-}
-
-void drawFooter() {
-  canvas.setTextColor(C_TEXT);
-  canvas.setTextDatum(MC_DATUM);
-  canvas.drawString(String("Today ") + footerCost, 70, 225, 2);
-  canvas.drawFastVLine(119, 216, 18, rgb565(48, 75, 95));
-  canvas.drawString(footerTokens, 169, 225, 2);
-  canvas.drawFastVLine(219, 216, 18, rgb565(48, 75, 95));
-  canvas.drawString(footerTime, 257, 225, 2);
-  canvas.setTextDatum(TL_DATUM);
-}
-
-void drawDashboard() {
+void drawPage(const Page &page, uint8_t index) {
   drawGradientBackground();
-  drawRow(rows[0], 16);
-  drawRow(rows[1], 116);
+  canvas.setTextDatum(TL_DATUM);
+
+  // Title bar: page name left, "n/4" page indicator right, rule below.
+  canvas.setTextColor(page.accent);
+  canvas.drawString(page.title, 16, 8, 2);
+  canvas.setTextDatum(TR_DATUM);
+  canvas.setTextColor(C_MUTED);
+  canvas.drawString(String(index + 1) + "/" + PAGE_COUNT, 304, 8, 2);
+  canvas.setTextDatum(TL_DATUM);
+  canvas.drawFastHLine(16, 34, 288, C_RULE);
+
+  // Left column: headline value, caption, optional progress bar.
+  canvas.setTextColor(page.accent);
+  canvas.drawString(page.bigValue, 16, 52, 4);
+  canvas.setTextColor(C_MUTED);
+  canvas.drawString(page.bigLabel, 16, 92, 2);
+  if (page.bar >= 0) {
+    drawBar(16, 116, 130, static_cast<uint8_t>(page.bar), page.accent);
+  }
+
+  // Right column: four label/value rows.
+  canvas.drawFastVLine(164, 46, 140, rgb565(28, 49, 63));
+  for (uint8_t i = 0; i < 4; i++) {
+    int y = 48 + i * 34;
+    canvas.setTextColor(C_MUTED);
+    canvas.drawString(page.rows[i].label, 178, y, 2);
+    canvas.setTextDatum(TR_DATUM);
+    canvas.setTextColor(C_TEXT);
+    canvas.drawString(page.rows[i].value, 304, y, 2);
+    canvas.setTextDatum(TL_DATUM);
+  }
+
+  // Hint line: how to switch pages.
+  canvas.setTextColor(rgb565(90, 115, 135));
+  canvas.drawString("< > switch page", 16, 176, 2);
+
   drawFooter();
 }
 
-void drawDashboardDataOnly() {
-  clearRowArea(16);
-  drawRow(rows[0], 16);
-  clearRowArea(116);
-  drawRow(rows[1], 116);
-  clearFooterArea();
-  drawFooter();
+void setupButtons() {
+  pinMode(WIO_5S_LEFT, INPUT_PULLUP);
+  pinMode(WIO_5S_RIGHT, INPUT_PULLUP);
+  pinMode(WIO_KEY_A, INPUT_PULLUP);
+  pinMode(WIO_KEY_B, INPUT_PULLUP);
+  pinMode(WIO_KEY_C, INPUT_PULLUP);
+  pinMode(WIO_5S_PRESS, INPUT_PULLUP);
+}
+
+void pollButtons() {
+  // Static debounce state: a key held down only fires once per press. LEFT /
+  // RIGHT cycle; A/B/C jump straight to pages 0-2 and the 5-way press opens
+  // the last page, so every page is one click away.
+  static bool leftWasDown = false;
+  static bool rightWasDown = false;
+  static bool aWasDown = false;
+  static bool bWasDown = false;
+  static bool cWasDown = false;
+  static bool pressWasDown = false;
+  static uint32_t lastEdgeMs = 0;
+  bool changed = false;
+
+  bool leftDown = digitalRead(WIO_5S_LEFT) == LOW;
+  bool rightDown = digitalRead(WIO_5S_RIGHT) == LOW;
+  bool aDown = digitalRead(WIO_KEY_A) == LOW;
+  bool bDown = digitalRead(WIO_KEY_B) == LOW;
+  bool cDown = digitalRead(WIO_KEY_C) == LOW;
+  bool pressDown = digitalRead(WIO_5S_PRESS) == LOW;
+
+  if (millis() - lastEdgeMs < 150) {
+    return;
+  }
+
+  if (leftDown && !leftWasDown) {
+    currentPage = (currentPage + PAGE_COUNT - 1) % PAGE_COUNT;
+    changed = true;
+  }
+  if (rightDown && !rightWasDown) {
+    currentPage = (currentPage + 1) % PAGE_COUNT;
+    changed = true;
+  }
+  if (aDown && !aWasDown) {
+    currentPage = 0;
+    changed = true;
+  }
+  if (bDown && !bWasDown) {
+    currentPage = 1;
+    changed = true;
+  }
+  if (cDown && !cWasDown) {
+    currentPage = 2;
+    changed = true;
+  }
+  if (pressDown && !pressWasDown) {
+    currentPage = 3;
+    changed = true;
+  }
+
+  if (changed) {
+    lastEdgeMs = millis();
+    debugLog(String("page -> ") + currentPage);
+    drawPage(pages[currentPage], currentPage);
+  }
+
+  leftWasDown = leftDown;
+  rightWasDown = rightDown;
+  aWasDown = aDown;
+  bWasDown = bDown;
+  cWasDown = cDown;
+  pressWasDown = pressDown;
 }
 
 void setup() {
@@ -411,11 +365,14 @@ void setup() {
   tft.setSwapBytes(true);
 
   canvas.setTextWrap(false);
+  setupButtons();
   setupBle();
-  drawDashboard();
+  drawPage(pages[currentPage], currentPage);
 }
 
 void loop() {
+  pollButtons();
+
   if (hasPendingPayload) {
     String payload = pendingPayload;
     hasPendingPayload = false;
@@ -423,7 +380,7 @@ void loop() {
       notifyDebug("JSON_DUPLICATE no redraw");
     } else if (applyQuotaPayload(payload)) {
       lastAppliedPayload = payload;
-      drawDashboardDataOnly();
+      drawPage(pages[currentPage], currentPage);
     }
   }
 

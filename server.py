@@ -54,55 +54,36 @@ def clamp_percent(value):
     return max(0, min(100, number))
 
 
-def compact_plan_row(plan):
-    # Row 0 "OpenCode Go": the official Go plan usage snapshot. The headline is
-    # the weekly used percentage; the two window bars are the 5-hour rolling
-    # window and the monthly allowance.
-    plan = plan or {}
-    weekly = plan.get("weekly") or {}
-    rolling = plan.get("rolling") or {}
-    monthly = plan.get("monthly") or {}
+def compact_page(page):
+    # One device page: headline value (t/v/l) plus up to four label/value
+    # rows (r). b is an optional 0-100 bar; -1 hides it.
+    rows = [{"n": str(r[0]), "v": str(r[1])} for r in (page.get("r") or [])[:4]]
+    while len(rows) < 4:
+        rows.append({"n": "", "v": ""})
+    bar = page.get("b")
     return {
-        "v": f"{clamp_percent(weekly.get('pct'))}%",
-        "l": "week used",
-        "a": {
-            "n": "5h",
-            "v": f"{clamp_percent(rolling.get('pct'))}%",
-            "b": clamp_percent(rolling.get("pct")),
-        },
-        "b": {
-            "n": "monthly",
-            "v": f"{clamp_percent(monthly.get('pct'))}%",
-            "b": clamp_percent(monthly.get("pct")),
-        },
-    }
-
-
-def compact_today_row(today):
-    # Row 1 "Today": real usage from local logs. b=-1 means "no bar" so the
-    # device renders these as plain text lines, not progress bars.
-    today = today or {}
-    return {
-        "v": str(today.get("tokensShort", "--")),
-        "l": "today tokens",
-        "a": {"n": "cost", "v": str(today.get("cost", "--")), "b": -1},
-        "b": {"n": "7d", "v": str(today.get("weekShort", "--")), "b": -1},
+        "t": str(page.get("t", "--"))[:15],
+        "v": str(page.get("v", "--")),
+        "l": str(page.get("l", "--"))[:15],
+        "b": clamp_percent(bar) if isinstance(bar, (int, float)) and bar >= 0 else -1,
+        "r": rows,
     }
 
 
 def compact_for_device(quota):
-    footer = quota.get("footer") or {}
+    magpie = quota.get("magpie") or {}
+    footer = magpie.get("footer") or {}
+    pages = magpie.get("pages") or []
     return {
         "u": str(quota.get("updatedAt") or footer.get("time") or ""),
         "f": {
-            "c": str(footer.get("cost", "--")),
+            "c": str(footer.get("brand", "Magpie")),
             "k": str(footer.get("tokens", "--")),
             "t": str(footer.get("time") or quota.get("updatedAt") or "--:--"),
         },
-        "p": {
-            "plan": compact_plan_row(quota.get("plan")),
-            "today": compact_today_row(quota.get("today")),
-        },
+        # Exactly four pages keep the payload shape fixed, so the firmware can
+        # index p[0..3] without a page-count negotiation.
+        "p": [compact_page(p) for p in (pages + [{}] * 4)[:4]],
     }
 
 

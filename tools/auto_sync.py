@@ -1,11 +1,11 @@
-"""Automatic loop: fetch real OpenCode Go quota -> update data/quota.json -> POST
+"""Automatic loop: fetch Magpie gateway stats -> update data/quota.json -> POST
 to the dashboard, which writes the file and triggers a BLE push to the Wio
 Terminal.
 
-The plan row comes from the official OpenCode Go usage endpoint
-(GET https://opencode.ai/inference/go/v1/usage, keyed by the OPENCODE_GO_API_KEY
-environment variable). token_usage.py still supplies today's token totals from
-local session logs. Run the dashboard server with BLE first:
+All numbers come from the local Magpie gateway (default
+http://127.0.0.1:3425, override with MAGPIE_URL). The device shows four pages
+(Overview / Requests / Sessions / Context); the five-way key switches pages.
+Run the dashboard server with BLE first:
 
     py server.py --ble --ble-interval 15
 
@@ -76,6 +76,157 @@ def short_tokens(n: int) -> str:
 GO_USAGE_URL = "https://opencode.ai/inference/go/v1/usage"
 GO_USAGE_TIMEOUT = 20
 
+# Local Magpie gateway (reference: peterroe/magpie-usage-display). It exposes
+# read-only stats for every provider it proxies, so the dashboard can show
+# gateway-wide usage instead of one provider's plan snapshot.
+MAGPIE_URL = os.environ.get("MAGPIE_URL", "http://127.0.0.1:3425")
+MAGPIE_TIMEOUT = 8
+
+
+def _get_json(url: str, timeout: int = MAGPIE_TIMEOUT) -> dict:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"unexpected response from {url}")
+    return data
+
+
+def fetch_magpie() -> dict | None:
+    """Collect quotas / usage / latest request from the local Magpie gateway.
+
+    Returns the three raw payloads or None when Magpie is not running or any
+    endpoint fails; the caller then keeps the previous snapshot, so the device
+    keeps its last numbers while the gateway restarts.
+    """
+    try:
+        root = _get_json(MAGPIE_URL + "/")
+        if "magpie" not in json.dumps(root.get("name", "")) and "/v1/magpie/quotas" not in (root.get("apis") or []):
+            print(f"[magpie] {MAGPIE_URL} is not a Magpie gateway", file=sys.stderr)
+            return None
+        quotas = _get_json(MAGPIE_URL + "/v1/magpie/quotas")
+        usage = _get_json(MAGPIE_URL + "/v1/magpie/usage")
+        requests = _get_json(MAGPIE_URL + "/v1/magpie/usage/requests?limit=1")
+        return {"quotas": quotas, "usage": usage, "requests": requests}
+    except Exception as error:
+        print(f"[magpie] fetch failed: {error}", file=sys.stderr)
+        return None
+
+
+def _bucket_tokens(bucket: dict) -> int:
+    return sum(
+        int(bucket.get(key) or 0)
+        for key in ("input", "output", "reasoning", "cache_read", "cache_write")
+    )
+
+
+def _most_constrained_window(quotas: dict) -> dict:
+    # Magpie aggregates several providers; the reference project highlights the
+    # window closest to exhaustion, which is what the user must act on first.
+    windows = [
+        window
+        for provider in quotas.get("data") or []
+        for window in provider.get("windows") or []
+        if not window.get("unlimited") and isinstance(window.get("remaining"), (int, float))
+    ]
+    return min(windows, key=lambda w: w["remaining"], default=None)
+
+
+def build_magpie_block(raw: dict, hhmm: str) -> dict:
+    """Turn raw Magpie payloads into the four device pages."""
+    quotas = raw.get("quotas") or {}
+    usage = raw.get("usage") or {}
+    requests = raw.get("requests") or {}
+
+    series = usage.get("series") or []
+    today = series[-1] if series else {}
+    calls_today = int(today.get("calls") or 0)
+    errors_today = min(calls_today, int(today.get("errors") or 0))
+    success_pct = round((calls_today - errors_today) * 100 / calls_today) if calls_today else 100
+    tokens_today = _bucket_tokens(today)
+    tokens_7d = sum(_bucket_tokens(b) for b in series[-7:])
+    timed_today = int(today.get("timed") or 0)
+    avg_ttft_ms = int(today.get("ttft_ms") or 0) // timed_today if timed_today else 0
+
+    latest = (requests.get("rows") or [{}])[0]
+    latest_status = int(latest.get("status") or 0)
+    latency_ms = int(latest.get("ms") or 0)
+    latest_model = str(latest.get("served") or latest.get("model") or "--")
+
+    total_calls = int(usage.get("calls") or 0)
+    total_tokens = _bucket_tokens(usage)
+    cost_30d = float(usage.get("cost") or 0)
+    sessions = int(usage.get("sessionCount") or 0)
+    models = usage.get("models") or []
+    top_model = max(models, key=lambda m: int(m.get("calls") or 0), default={})
+
+    cache_read = int(usage.get("cache_read") or 0)
+    input_total = int(usage.get("input") or 0)
+    cache_base = cache_read + input_total
+    cache_hit_pct = round(cache_read * 100 / cache_base) if cache_base else 0
+
+    min_window = _most_constrained_window(quotas)
+    if min_window:
+        min_left = f"{round(float(min_window['remaining']))}%"
+        min_name = str(min_window.get("name") or "--")
+    else:
+        min_left, min_name = "--", "--"
+
+    pages = [
+        {
+            "t": "Overview",
+            "v": f"{success_pct}%",
+            "l": "today success",
+            "b": -1,
+            "r": [
+                ["calls", str(calls_today)],
+                ["errors", str(errors_today)],
+                ["min left", min_left],
+                ["window", min_name[:14]],
+            ],
+        },
+        {
+            "t": "Requests",
+            "v": short_tokens(tokens_today),
+            "l": "today tokens",
+            "b": -1,
+            "r": [
+                ["latest", latest_model[:14]],
+                ["status", str(latest_status) if latest_status else "--"],
+                ["latency", f"{latency_ms / 1000:.1f}s" if latency_ms else "--"],
+                ["avg ttft", f"{avg_ttft_ms}ms" if avg_ttft_ms else "--"],
+            ],
+        },
+        {
+            "t": "Sessions",
+            "v": f"${cost_30d:.2f}",
+            "l": "30d cost",
+            "b": -1,
+            "r": [
+                ["sessions", str(sessions)],
+                ["calls", str(total_calls)],
+                ["tokens 30d", short_tokens(total_tokens)],
+                ["top model", str(top_model.get("name") or "--")[:14]],
+            ],
+        },
+        {
+            "t": "Context",
+            "v": f"{cache_hit_pct}%",
+            "l": "cache hit",
+            "b": cache_hit_pct,
+            "r": [
+                ["input", short_tokens(input_total)],
+                ["output", short_tokens(int(usage.get("output") or 0))],
+                ["cache read", short_tokens(cache_read)],
+                ["reasoning", short_tokens(int(usage.get("reasoning") or 0))],
+            ],
+        },
+    ]
+    return {
+        "footer": {"brand": "Magpie", "tokens": f"{short_tokens(total_tokens)} 30d", "time": hhmm},
+        "pages": pages,
+    }
+
 
 def fetch_plan() -> dict | None:
     """Best-effort OpenCode Go plan usage snapshot via the official usage API.
@@ -132,52 +283,25 @@ def fetch_plan() -> dict | None:
 
 
 def build_quota(args) -> dict:
-    # Actual usage always comes from the local session logs (Claude Code and
-    # Codex run against OpenCode Go, so the official Anthropic / OpenAI quota
-    # endpoints don't apply).
+    # All numbers come from the local Magpie gateway, which already aggregates
+    # every provider the user's agents go through; no provider-specific API
+    # keys are needed here.
     tz = timezone(timedelta(hours=args.tz))
     now = datetime.now(tz)
-    start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_week = now - timedelta(days=7)
-    cx_today, cx_week, _ = tu.collect_codex(start_today, start_week)
-    cc_today, cc_week, _ = tu.collect_claude(start_today, start_week)
-
-    today_total = cx_today["total"] + cc_today["total"]
-    week_total = cx_week["total"] + cc_week["total"]
-    today_cost = estimate_cost(cx_today, PRICING["codex"]) + estimate_cost(cc_today, PRICING["claude"])
+    hhmm = now.strftime("%H:%M")
 
     try:
         quota = json.loads(cu.DATA_FILE.read_text("utf-8"))
     except Exception:
         quota = {}
     quota.pop("platforms", None)  # per-platform Anthropic/OpenAI quota is unused
-    # Migrate a stale Volcano-era plan snapshot (key "session") to the OpenCode
-    # Go schema ("rolling") so the 5h window bar keeps rendering while the new
-    # fetch is unavailable.
-    old_plan = quota.get("plan") or {}
-    if "session" in old_plan and "rolling" not in old_plan:
-        old_plan["rolling"] = old_plan.pop("session")
+    quota.pop("plan", None)
+    quota.pop("today", None)
 
-    hhmm = now.strftime("%H:%M")
+    raw = fetch_magpie()
+    if raw:
+        quota["magpie"] = build_magpie_block(raw, hhmm)
     quota["updatedAt"] = hhmm
-    footer = quota.setdefault("footer", {})
-    footer["time"] = hhmm
-    footer["tokens"] = human_tokens(today_total)
-    footer["cost"] = f"${today_cost:.2f}"
-
-    # OpenCode Go quota (best-effort): keep the previous snapshot when the API
-    # key is missing, expired, or the endpoint is unreachable.
-    plan = fetch_plan()
-    if plan:
-        quota["plan"] = plan
-
-    quota["today"] = {
-        "tokens": human_tokens(today_total),
-        "tokensShort": short_tokens(today_total),
-        "cost": f"${today_cost:.2f}",
-        "weekTokens": human_tokens(week_total),
-        "weekShort": short_tokens(week_total),
-    }
     return quota
 
 
@@ -197,15 +321,19 @@ def cycle(args) -> None:
     except Exception as error:
         cu.DATA_FILE.write_text(json.dumps(quota, ensure_ascii=False, indent=2) + "\n", "utf-8")
         pushed = f"file-only (server down? {error})"
-    plan = quota.get("plan") or {}
-    today = quota.get("today") or {}
+    magpie = quota.get("magpie") or {}
+    pages = magpie.get("pages") or []
     stamp = datetime.now().strftime("%H:%M:%S")
-    print(
-        f"[{stamp}] go week={plan.get('weekly', {}).get('pct', '--')}% "
-        f"rolling={plan.get('rolling', {}).get('pct', '--')}%  "
-        f"today={today.get('cost', '--')} tokens={today.get('tokensShort', '--')}  -> {pushed}",
-        flush=True,
-    )
+    if pages:
+        overview = pages[0].get("r") or []
+        print(
+            f"[{stamp}] magpie today={pages[0].get('v', '--')} "
+            f"calls={overview[0][1] if len(overview) > 0 else '--'} "
+            f"errors={overview[1][1] if len(overview) > 1 else '--'}  -> {pushed}",
+            flush=True,
+        )
+    else:
+        print(f"[{stamp}] magpie unavailable, kept last snapshot -> {pushed}", flush=True)
 
 
 def main() -> int:
